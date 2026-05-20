@@ -8,6 +8,7 @@
 // allows multiple images under a per-artwork-ish folder.
 
 import crypto from 'node:crypto';
+import mongoose from 'mongoose';
 import Artwork, { ARTWORK_STATUSES, MAX_IMAGES } from '../models/Artwork.js';
 import { AppError } from '../middleware/errorHandler.js';
 
@@ -17,25 +18,98 @@ const API_SECRET = process.env.CLOUDINARY_API_SECRET;
 const ARTWORK_FOLDER =
   process.env.CLOUDINARY_ARTWORK_FOLDER || 'staffarts/artworks';
 
+// Escape user input before using it in a regex.
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // ── List ────────────────────────────────────────────────────────────────
-// GET /api/artworks?limit=&sort=&artist=&status=
+// GET /api/artworks?limit=&page=&sort=&artist=&status=&available=&q=
+//
+// Uses an aggregation pipeline so we can search across the artist's
+// displayName (a ref) as well as the artwork's own title/medium, and
+// return a page slice + total count in a single round-trip via $facet.
+//
+// Response: { success, data, page, limit, total, hasMore }
 export const listArtworks = async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 20, 50);
-  const sort = req.query.sort || '-createdAt';
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const skip = (page - 1) * limit;
 
-  const filter = {};
-  if (req.query.artist) filter.artist = req.query.artist;
+  // Sort: default newest first. Accept '-field' or 'field'.
+  const sortParam = req.query.sort || '-createdAt';
+  const sortField = sortParam.replace(/^-/, '');
+  const sortDir = sortParam.startsWith('-') ? -1 : 1;
+  const sort = { [sortField]: sortDir };
+
+  // ── Base match (pre-lookup): artist + status filters ──
+  const match = {};
+  if (req.query.artist && mongoose.isValidObjectId(req.query.artist)) {
+    match.artist = new mongoose.Types.ObjectId(req.query.artist);
+  }
   if (req.query.status && ARTWORK_STATUSES.includes(req.query.status)) {
-    filter.status = req.query.status;
+    match.status = req.query.status;
+  }
+  // `available=true` is a convenience flag for the "For sale" toggle.
+  if (req.query.available === 'true') {
+    match.status = 'available';
   }
 
-  const artworks = await Artwork.find(filter)
-    .sort(sort)
-    .limit(limit)
-    .populate('artist', 'displayName profileImage')
-    .lean();
+  // ── Search match (post-lookup): title / medium / artist.displayName ──
+  const q = (req.query.q || '').trim();
+  const searchStage = [];
+  if (q) {
+    const rx = new RegExp(escapeRegex(q), 'i');
+    searchStage.push({
+      $match: {
+        $or: [
+          { title: rx },
+          { medium: rx },
+          { 'artistDoc.displayName': rx },
+        ],
+      },
+    });
+  }
 
-  res.json({ success: true, data: artworks });
+  const pipeline = [
+    { $match: match },
+    // Join the artist so we can both search and shape the response.
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'artist',
+        foreignField: '_id',
+        as: 'artistDoc',
+      },
+    },
+    { $unwind: { path: '$artistDoc', preserveNullAndEmptyArrays: true } },
+    ...searchStage,
+    // Re-shape artist to the same subset .populate() returned before.
+    {
+      $addFields: {
+        artist: {
+          _id: '$artistDoc._id',
+          displayName: '$artistDoc.displayName',
+          profileImage: '$artistDoc.profileImage',
+        },
+      },
+    },
+    { $project: { artistDoc: 0 } },
+    // One round-trip: page slice + total count.
+    {
+      $facet: {
+        data: [{ $sort: sort }, { $skip: skip }, { $limit: limit }],
+        meta: [{ $count: 'total' }],
+      },
+    },
+  ];
+
+  const result = await Artwork.aggregate(pipeline);
+  const data = result?.[0]?.data ?? [];
+  const total = result?.[0]?.meta?.[0]?.total ?? 0;
+  const hasMore = skip + data.length < total;
+
+  res.json({ success: true, data, page, limit, total, hasMore });
 };
 
 // ── Detail ──────────────────────────────────────────────────────────────
@@ -72,7 +146,6 @@ export const createArtwork = async (req, res) => {
     throw new AppError(`Too many images (max ${MAX_IMAGES})`, 400);
   }
 
-  // Validate any provided image URLs belong to our Cloudinary cloud.
   if (Array.isArray(images) && CLOUD_NAME) {
     const expectedHost = `res.cloudinary.com/${CLOUD_NAME}/`;
     for (const url of images) {
@@ -183,16 +256,12 @@ export const deleteArtwork = async (req, res) => {
 
 // ── Sign image upload ─────────────────────────────────────────────────────
 // POST /api/uploads/artwork/sign  (auth)
-// Returns a Cloudinary signature for one image. The client calls this once
-// per image it wants to upload (up to MAX_IMAGES).
 export const signArtworkUpload = async (req, res) => {
   if (!CLOUD_NAME || !API_KEY || !API_SECRET) {
     throw new AppError('Cloudinary credentials are not configured', 500);
   }
 
   const timestamp = Math.floor(Date.now() / 1000);
-  // Unique-ish public_id per upload so multiple images don't overwrite each
-  // other. Folder groups them; a random suffix keeps them distinct.
   const rand = crypto.randomBytes(6).toString('hex');
   const publicId = `${ARTWORK_FOLDER}/${req.userId}_${timestamp}_${rand}`;
 
@@ -200,7 +269,6 @@ export const signArtworkUpload = async (req, res) => {
     folder: ARTWORK_FOLDER,
     public_id: publicId,
     timestamp,
-    // Constrain very large originals; keep aspect ratio.
     transformation: 'c_limit,w_2000,h_2000,q_auto,f_auto',
   };
 
