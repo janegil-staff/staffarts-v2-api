@@ -9,6 +9,7 @@ import { connectDB } from './config/db.js';
 import authRoutes from './routes/auth.js';
 import usersRoutes from './routes/users.js';
 import artworkRoutes from './routes/artworks.js';
+import eventRoutes from './routes/events.js';
 import contentRoutes from './routes/content.js';
 import errorHandler from './middleware/errorHandler.js';
 
@@ -43,7 +44,8 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api', usersRoutes); // /users/:id, /uploads/avatar/sign
 app.use('/api', artworkRoutes); // /artworks, /uploads/artwork/sign
-app.use('/api', contentRoutes); // events, exhibitions, tracks (stubs)
+app.use('/api', eventRoutes); // /events, /uploads/event/sign  (real — must precede content stubs)
+app.use('/api', contentRoutes); // exhibitions, tracks (stubs)
 
 // 404
 app.use((req, res) => {
