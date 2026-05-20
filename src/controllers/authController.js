@@ -342,3 +342,206 @@ export const logout = async (req, res) => {
 
   res.json({ success: true });
 };
+
+// Add this near the bottom of src/controllers/authController.js,
+// before the closing of the file. Also update the imports at top if needed.
+
+// ────────────────────────────────────────────────────────────────────────
+// PATCH /api/auth/email
+// Body: { newEmail, pin }
+// Authenticated. Verifies the user's PIN before changing the email.
+// ────────────────────────────────────────────────────────────────────────
+
+export const changeEmail = async (req, res) => {
+  const { newEmail, pin } = req.body || {};
+
+  if (!newEmail || !pin) {
+    throw new AppError('New email and PIN are required', 400);
+  }
+  if (!isValidPin(pin)) {
+    throw new AppError('PIN must be exactly 4 digits', 400);
+  }
+
+  const emailRx = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const normalized = newEmail.toLowerCase().trim();
+  if (!emailRx.test(normalized)) {
+    throw new AppError('Email is invalid', 400);
+  }
+
+  const user = await User.findById(req.userId).select(
+    '+pinHash +failedPinAttempts +lockedUntil',
+  );
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+
+  if (user.isLocked()) {
+    throw new AppError('Account is temporarily locked', 429);
+  }
+
+  if (normalized === user.email) {
+    throw new AppError('That is already your email', 400);
+  }
+
+  // Verify PIN — same lockout treatment as login.
+  const ok = await user.comparePin(pin);
+  if (!ok) {
+    user.failedPinAttempts = (user.failedPinAttempts || 0) + 1;
+    if (user.failedPinAttempts >= 5) {
+      user.lockedUntil = new Date(Date.now() + 15 * 60_000);
+      user.failedPinAttempts = 0;
+    }
+    await user.save({ validateBeforeSave: false });
+    throw new AppError('Invalid PIN', 401);
+  }
+
+  // Make sure no other user has this email.
+  const conflict = await User.findOne({ email: normalized });
+  if (conflict && conflict._id.toString() !== user._id.toString()) {
+    throw new AppError('An account with that email already exists', 409);
+  }
+
+  user.email = normalized;
+  user.failedPinAttempts = 0;
+  user.lockedUntil = null;
+  // Optional: flip emailVerified back to false until they re-verify.
+  user.emailVerified = false;
+  await user.save();
+
+  res.json({ success: true, data: { user: user.toJSON() } });
+};
+
+// ────────────────────────────────────────────────────────────────────────
+// DELETE /api/auth/account
+// Body: { pin }
+// Authenticated. Verifies PIN, then hard-deletes the user and all owned
+// content (artworks, events, exhibitions, tracks, messages, conversations).
+// ────────────────────────────────────────────────────────────────────────
+
+export const deleteAccount = async (req, res) => {
+  const { pin } = req.body || {};
+
+  if (!pin) {
+    throw new AppError('PIN is required', 400);
+  }
+  if (!isValidPin(pin)) {
+    throw new AppError('PIN must be exactly 4 digits', 400);
+  }
+
+  const user = await User.findById(req.userId).select(
+    '+pinHash +failedPinAttempts +lockedUntil',
+  );
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+
+  if (user.isLocked()) {
+    throw new AppError('Account is temporarily locked', 429);
+  }
+
+  // Verify PIN — same lockout treatment as login.
+  const ok = await user.comparePin(pin);
+  if (!ok) {
+    user.failedPinAttempts = (user.failedPinAttempts || 0) + 1;
+    if (user.failedPinAttempts >= 5) {
+      user.lockedUntil = new Date(Date.now() + 15 * 60_000);
+      user.failedPinAttempts = 0;
+    }
+    await user.save({ validateBeforeSave: false });
+    throw new AppError('Invalid PIN', 401);
+  }
+
+  const userId = user._id;
+  const summary = {
+    artworks: 0,
+    events: 0,
+    exhibitions: 0,
+    tracks: 0,
+    conversations: 0,
+    messages: 0,
+  };
+
+  // Best-effort cascade. Each block is independent; one failure shouldn't
+  // block the rest of the deletion. The owner field name varies by model;
+  // try the common ones.
+  const ownerFields = ['artist', 'owner', 'createdBy', 'user', 'host'];
+  const cascadeCollections = [
+    { model: 'Artwork', key: 'artworks' },
+    { model: 'Event', key: 'events' },
+    { model: 'Exhibition', key: 'exhibitions' },
+    { model: 'Track', key: 'tracks' },
+  ];
+
+  for (const { model, key } of cascadeCollections) {
+    try {
+      const Mongoose = (await import('mongoose')).default;
+      if (Mongoose.models[model]) {
+        const M = Mongoose.models[model];
+        // Match documents where ANY of the owner field names points to this user.
+        const query = { $or: ownerFields.map((f) => ({ [f]: userId })) };
+        const r = await M.deleteMany(query);
+        summary[key] = r.deletedCount || 0;
+      }
+    } catch (err) {
+      console.warn(`[deleteAccount] ${model} cleanup failed:`, err.message);
+    }
+  }
+
+  // Conversations + messages — slightly different shape (participants array).
+  try {
+    const Mongoose = (await import('mongoose')).default;
+    if (Mongoose.models.Conversation) {
+      const Conversation = Mongoose.models.Conversation;
+      // Delete every conversation the user is part of.
+      const convoQuery = {
+        $or: [
+          { participants: userId },
+          { members: userId },
+          { users: userId },
+        ],
+      };
+      const convoIds = await Conversation.find(convoQuery)
+        .select('_id')
+        .lean();
+      const ids = convoIds.map((c) => c._id);
+
+      if (Mongoose.models.Message && ids.length > 0) {
+        const Message = Mongoose.models.Message;
+        const msgResult = await Message.deleteMany({
+          $or: [
+            { conversation: { $in: ids } },
+            { conversationId: { $in: ids } },
+            { sender: userId },
+          ],
+        });
+        summary.messages = msgResult.deletedCount || 0;
+      }
+
+      const convoResult = await Conversation.deleteMany({
+        _id: { $in: ids },
+      });
+      summary.conversations = convoResult.deletedCount || 0;
+    }
+  } catch (err) {
+    console.warn(
+      '[deleteAccount] conversation cleanup failed:',
+      err.message,
+    );
+  }
+
+  // Finally, delete the user itself.
+  await User.deleteOne({ _id: userId });
+
+  console.log(
+    `[deleteAccount] user=${userId} cleanup:`,
+    JSON.stringify(summary),
+  );
+
+  res.json({
+    success: true,
+    data: {
+      message: 'Account and all associated content deleted',
+      removed: summary,
+    },
+  });
+};

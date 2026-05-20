@@ -1,9 +1,4 @@
 // src/routes/auth.js
-//
-// Email + PIN auth routes with per-IP rate limiting on the abuse-prone
-// endpoints (login + forgot/reset-pin). Per-account lockout lives in the
-// controller for finer-grained control. All async handlers are wrapped
-// in asyncHandler so thrown errors reach the global errorHandler middleware.
 
 import { Router } from 'express';
 import {
@@ -14,6 +9,8 @@ import {
   refresh,
   me,
   logout,
+  changeEmail,
+  deleteAccount,
 } from '../controllers/authController.js';
 import authenticate from '../middleware/authenticate.js';
 import {
@@ -31,5 +28,7 @@ router.post('/reset-pin', pinResetRateLimiter, asyncHandler(resetPin));
 router.post('/refresh', asyncHandler(refresh));
 router.get('/me', authenticate, asyncHandler(me));
 router.post('/logout', asyncHandler(logout));
+router.patch('/email', authenticate, asyncHandler(changeEmail));
+router.delete('/account', authenticate, asyncHandler(deleteAccount));
 
 export default router;
