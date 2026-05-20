@@ -1,19 +1,72 @@
-import 'dotenv/config';
-import app from './app.js';
-import connectDB from './config/db.js';
+// src/server.js
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import morgan from "morgan";
 
-const PORT = process.env.PORT || 3000;
+import { config } from "./config/index.js";
+import { connectDB } from "./config/db.js";
+import authRoutes from "./routes/auth.js";
+import contentRoutes from "./routes/content.js";
+import errorHandler from "./middleware/errorHandler.js";
 
-const start = async () => {
-  await connectDB();
+const app = express();
 
-  app.listen(PORT, () => {
-    console.log(`🚀 Staff Arts v2 API running on http://localhost:${PORT}`);
-    console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
+app.use(helmet());
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (config.corsOrigins.length === 0) return cb(null, true);
+      if (config.corsOrigins.includes(origin)) return cb(null, true);
+      return cb(new Error("CORS not allowed for origin: " + origin));
+    },
+    credentials: true,
+  }),
+);
+app.use(express.json({ limit: "1mb" }));
+app.use(morgan(config.env === "production" ? "combined" : "dev"));
+
+// ── Routes ────────────────────────────────────────────────────────────────
+
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    service: "staffarts2-api",
+    env: config.env,
+    time: new Date().toISOString(),
   });
-};
-
-start().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
 });
+
+app.use("/api/auth", authRoutes);
+app.use("/api", contentRoutes); // artworks, events, exhibitions, tracks
+
+// 404 (must come after all routes, before error handler)
+app.use((req, res) => {
+  res.status(404).json({ error: "not_found", path: req.path });
+});
+
+// Global error handler — async controllers throw, this catches.
+app.use(errorHandler);
+
+// ── Startup ───────────────────────────────────────────────────────────────
+
+async function start() {
+  try {
+    await connectDB();
+  } catch (e) {
+    if (config.env !== "development") throw e;
+    console.warn("[startup] DB not reachable, continuing in dev mode.");
+  }
+
+  app.listen(config.port, () => {
+    console.log(
+      `[staffarts2-api] listening on http://localhost:${config.port}`,
+    );
+    console.log(
+      `[staffarts2-api] try: curl http://localhost:${config.port}/health`,
+    );
+  });
+}
+
+start();

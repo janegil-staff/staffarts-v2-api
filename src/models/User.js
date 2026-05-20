@@ -1,75 +1,104 @@
+// src/models/User.js
+//
+// Email + 4-digit PIN authentication. PIN is bcrypt-hashed. Brute-force is
+// mitigated by rate limiting in the route layer.
+
 import mongoose from 'mongoose';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
+
+const BCRYPT_ROUNDS = 10;
+
+const SUPPORTED_LANGUAGES = [
+  'no', 'en', 'nl', 'fr', 'de', 'it',
+  'sv', 'da', 'fi', 'es', 'pl', 'pt',
+];
 
 const userSchema = new mongoose.Schema(
   {
     email: {
       type: String,
-      required: [true, 'Email is required'],
+      required: true,
       unique: true,
       lowercase: true,
       trim: true,
-      match: [/^\S+@\S+\.\S+$/, 'Invalid email format'],
     },
-    password: {
+
+    // Bcrypt hash of the user's 4-digit PIN. select:false so it never leaks.
+    pinHash: { type: String, required: true, select: false },
+
+    displayName: { type: String, required: true, trim: true },
+
+    profileImage: { type: String, default: null },
+    bio: { type: String, default: '' },
+
+    // ── Preferences ───────────────────────────────────────────────────
+    // ISO 639-1 code; restricted to languages the app supports. Used for
+    // PIN reset emails, future welcome emails, and multi-device sync.
+    language: {
       type: String,
-      required: [true, 'Password is required'],
-      minlength: [8, 'Password must be at least 8 characters'],
-      select: false, // never returned in queries by default
+      enum: SUPPORTED_LANGUAGES,
+      default: 'en',
     },
-    displayName: {
+
+    role: {
       type: String,
-      required: [true, 'Display name is required'],
-      trim: true,
-      minlength: [2, 'Display name must be at least 2 characters'],
-      maxlength: 50,
+      enum: ['collector', 'artist'],
+      default: 'collector',
     },
 
-    // Optional profile fields, filled later from the profile screen
-    bio: { type: String, default: '', maxlength: 500 },
-    avatarUrl: { type: String, default: null },
-    location: { type: String, default: '', maxlength: 100 },
-
-    // Behaviour flags. Everyone is a collector by default. isArtist flips
-    // to true when the user uploads their first artwork.
-    isArtist: { type: Boolean, default: false },
-    isCollector: { type: Boolean, default: true },
-
-    // Refresh token storage with grace-period support.
-    // currentRefreshToken is the latest issued token.
-    // previousRefreshToken is the one it replaced; valid for REFRESH_GRACE_SECONDS.
-    // previousRefreshExpiresAt is when the grace ends; null if no previous token.
+    // ── Refresh-token rotation ────────────────────────────────────────
     currentRefreshToken: { type: String, default: null, select: false },
     previousRefreshToken: { type: String, default: null, select: false },
     previousRefreshExpiresAt: { type: Date, default: null, select: false },
 
-    lastSeenAt: { type: Date, default: Date.now },
+    // ── Forgot-PIN reset codes ────────────────────────────────────────
+    pinResetCodeHash: { type: String, default: null, select: false },
+    pinResetExpiresAt: { type: Date, default: null, select: false },
+
+    // ── Login rate limiting (per-account) ─────────────────────────────
+    failedPinAttempts: { type: Number, default: 0 },
+    lockedUntil: { type: Date, default: null },
+
+    emailVerified: { type: Boolean, default: false },
+    lastSeenAt: { type: Date, default: () => new Date() },
+    lastLoginAt: { type: Date, default: () => new Date() },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-// Hash password before save if it's new or changed.
-userSchema.pre('save', async function () {
-  if (!this.isModified('password')) return;
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
-});
-
-// Instance method: check a plaintext password against this user's hash.
-userSchema.methods.comparePassword = async function (candidate) {
-  return bcrypt.compare(candidate, this.password);
+// ── Instance methods ────────────────────────────────────────────────────
+userSchema.methods.setPin = async function (pin) {
+  if (typeof pin !== 'string' || !/^\d{4}$/.test(pin)) {
+    throw new Error('PIN must be exactly 4 digits');
+  }
+  this.pinHash = await bcrypt.hash(pin, BCRYPT_ROUNDS);
 };
 
-// Strip sensitive fields from JSON output (when sending to client).
+userSchema.methods.comparePin = async function (pin) {
+  if (!this.pinHash || typeof pin !== 'string') return false;
+  return bcrypt.compare(pin, this.pinHash);
+};
+
+userSchema.methods.isLocked = function () {
+  return this.lockedUntil && this.lockedUntil.getTime() > Date.now();
+};
+
+// Strip sensitive fields from JSON.
 userSchema.methods.toJSON = function () {
   const obj = this.toObject();
-  delete obj.password;
+  delete obj.pinHash;
   delete obj.currentRefreshToken;
   delete obj.previousRefreshToken;
   delete obj.previousRefreshExpiresAt;
+  delete obj.pinResetCodeHash;
+  delete obj.pinResetExpiresAt;
+  delete obj.failedPinAttempts;
+  delete obj.lockedUntil;
   delete obj.__v;
   return obj;
 };
 
-const User = mongoose.model('User', userSchema);
-export default User;
+// Export the supported list so the controller can validate before save.
+export { SUPPORTED_LANGUAGES };
+
+export default mongoose.models.User || mongoose.model('User', userSchema);

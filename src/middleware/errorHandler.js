@@ -1,10 +1,3 @@
-/**
- * Custom application error. Throw this from controllers/middleware to
- * return a structured response with a specific HTTP status code.
- *
- * Example:
- *   throw new AppError('User not found', 404);
- */
 export class AppError extends Error {
   constructor(message, statusCode = 500) {
     super(message);
@@ -14,12 +7,14 @@ export class AppError extends Error {
   }
 }
 
-/**
- * Global error handler. Must be the LAST middleware registered in app.js.
- * Express recognises error handlers by their 4-argument signature.
- */
 const errorHandler = (err, req, res, next) => {
-  // Mongoose validation error — bad field values
+  // Always log to help debugging
+  console.error('🔴 Error on', req.method, req.path, '-', err.name, '-', err.message);
+  if (err.stack && !err.isOperational) {
+    console.error(err.stack);
+  }
+
+  // Mongoose validation error
   if (err.name === 'ValidationError') {
     const messages = Object.values(err.errors).map((e) => e.message);
     return res.status(400).json({
@@ -28,7 +23,7 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
-  // Mongoose duplicate key error — unique index violated
+  // Mongoose duplicate key error
   if (err.code === 11000) {
     const field = Object.keys(err.keyPattern || {})[0] || 'field';
     return res.status(409).json({
@@ -37,7 +32,7 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
-  // Mongoose invalid ObjectId in a query
+  // Mongoose invalid ObjectId
   if (err.name === 'CastError') {
     return res.status(400).json({
       success: false,
@@ -45,7 +40,7 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
-  // JWT errors — token invalid or expired
+  // JWT errors
   if (err.name === 'JsonWebTokenError') {
     return res.status(401).json({
       success: false,
@@ -67,8 +62,7 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
-  // Unknown / unexpected error — log it server-side, send a generic message
-  console.error('Unexpected error:', err);
+  // Unknown / unexpected
   return res.status(500).json({
     success: false,
     error:
