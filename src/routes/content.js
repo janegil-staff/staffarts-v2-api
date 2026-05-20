@@ -1,21 +1,14 @@
 // src/routes/content.js
 //
-// Stub routes for the resources Home / Explore / Shows expect. These return
-// empty arrays for now so the mobile app renders without 404 spam. Replace
-// each one with a real model + controller as those features get built.
+// Stub routes for resources not yet built (events, exhibitions, tracks).
+// Artworks now have a real router (routes/artworks.js) — removed from here.
+// Replace each remaining stub with a real model + controller as built.
 
 import { Router } from 'express';
 
 const router = Router();
 
-// Helper: standard success envelope.
 const ok = (data = []) => ({ success: true, data });
-
-// ── Artworks ───────────────────────────────────────────────────────────
-router.get('/artworks', (req, res) => res.json(ok([])));
-router.get('/artworks/:id', (req, res) =>
-  res.status(404).json({ success: false, error: 'Artwork not found' }),
-);
 
 // ── Events ─────────────────────────────────────────────────────────────
 router.get('/events', (req, res) => res.json(ok([])));
@@ -30,8 +23,6 @@ router.get('/exhibitions/:id', (req, res) =>
 );
 
 // ── Tracks ─────────────────────────────────────────────────────────────
-router.get('/tracks', (req, res) =>
-  res.json({ success: true, tracks: [] }),
-);
+router.get('/tracks', (req, res) => res.json({ success: true, tracks: [] }));
 
 export default router;

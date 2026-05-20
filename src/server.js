@@ -7,8 +7,9 @@ import morgan from 'morgan';
 import { config } from './config/index.js';
 import { connectDB } from './config/db.js';
 import authRoutes from './routes/auth.js';
-import contentRoutes from './routes/content.js';
 import usersRoutes from './routes/users.js';
+import artworkRoutes from './routes/artworks.js';
+import contentRoutes from './routes/content.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -41,7 +42,8 @@ app.get('/health', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api', usersRoutes); // /users/:id, /uploads/avatar/sign
-app.use('/api', contentRoutes); // artworks, events, exhibitions, tracks
+app.use('/api', artworkRoutes); // /artworks, /uploads/artwork/sign
+app.use('/api', contentRoutes); // events, exhibitions, tracks (stubs)
 
 // 404
 app.use((req, res) => {
