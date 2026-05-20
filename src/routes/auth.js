@@ -12,6 +12,11 @@ import {
   changeEmail,
   deleteAccount,
 } from '../controllers/authController.js';
+import {
+  updateProfile,
+  updateAvatar,
+  signAvatarUpload,
+} from '../controllers/profileController.js';
 import authenticate from '../middleware/authenticate.js';
 import {
   loginRateLimiter,
@@ -30,5 +35,9 @@ router.get('/me', authenticate, asyncHandler(me));
 router.post('/logout', asyncHandler(logout));
 router.patch('/email', authenticate, asyncHandler(changeEmail));
 router.delete('/account', authenticate, asyncHandler(deleteAccount));
+
+// Profile management
+router.patch('/profile', authenticate, asyncHandler(updateProfile));
+router.patch('/avatar', authenticate, asyncHandler(updateAvatar));
 
 export default router;
