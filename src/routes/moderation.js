@@ -18,7 +18,7 @@ import Block from '../models/Block.js';
 import Report, { REPORT_REASONS } from '../models/Report.js';
 
 // Same auth middleware the messages routes use: default export, sets req.userId.
-import authenticate from '../middleware/auth.js';
+import authenticate from '../middleware/authenticate.js';
 
 const router = express.Router();
 
