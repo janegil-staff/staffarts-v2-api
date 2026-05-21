@@ -13,6 +13,7 @@ import artworkRoutes from './routes/artworks.js';
 import eventRoutes from './routes/events.js';
 import contentRoutes from './routes/content.js';
 import messagesRoutes from './routes/messages.js';
+import moderationRoutes from './routes/moderation.js';
 import errorHandler from './middleware/errorHandler.js';
 import { initSocket } from './socket/index.js';
 
@@ -49,6 +50,7 @@ app.use('/api', usersRoutes); // /users/:id, /uploads/avatar/sign
 app.use('/api', artworkRoutes); // /artworks, /uploads/artwork/sign
 app.use('/api', eventRoutes); // /events, /uploads/event/sign  (real — must precede content stubs)
 app.use('/api', messagesRoutes); // /conversations, /messages  (real — precede content stubs)
+app.use('/api', moderationRoutes); // /blocks, /reports  (real — precede content stubs)
 app.use('/api', contentRoutes); // exhibitions, tracks (stubs)
 
 // 404
