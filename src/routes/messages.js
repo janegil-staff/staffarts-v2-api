@@ -21,11 +21,12 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 
-import authenticate from '../middleware/authenticate.js';
+import authenticate from '../middleware/auth.js';
 import { AppError } from '../middleware/errorHandler.js';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import User from '../models/User.js';
+import Block from '../models/Block.js';
 import { emitNewMessage, emitConversationRead } from '../socket/index.js';
 
 const router = Router();
@@ -53,21 +54,28 @@ router.get('/conversations', authenticate, async (req, res, next) => {
       .populate('participants', 'displayName profileImage role')
       .lean();
 
-    const data = conversations.map((c) => {
-      const unreadMap = c.unread || {};
-      const myUnread = Number(unreadMap[String(me)] || 0);
-      const other = (c.participants || []).find(
-        (p) => String(p._id) !== String(me),
-      );
-      return {
-        _id: c._id,
-        participant: other || null,
-        lastMessage: c.lastMessage || null,
-        unread: myUnread,
-        updatedAt: c.updatedAt,
-        createdAt: c.createdAt,
-      };
-    });
+    // Users to hide: anyone I've blocked, or anyone who has blocked me. Their
+    // threads disappear from the list on both sides (mutual).
+    const hidden = new Set(await Block.hiddenUserIdsFor(me));
+
+    const data = conversations
+      .map((c) => {
+        const unreadMap = c.unread || {};
+        const myUnread = Number(unreadMap[String(me)] || 0);
+        const other = (c.participants || []).find(
+          (p) => String(p._id) !== String(me),
+        );
+        return {
+          _id: c._id,
+          participant: other || null,
+          lastMessage: c.lastMessage || null,
+          unread: myUnread,
+          updatedAt: c.updatedAt,
+          createdAt: c.createdAt,
+        };
+      })
+      // Drop threads with a blocked counterpart.
+      .filter((row) => row.participant && !hidden.has(String(row.participant._id)));
 
     res.json({ success: true, data });
   } catch (e) {
@@ -81,11 +89,17 @@ router.get('/conversations/unread', authenticate, async (req, res, next) => {
     const me = String(req.userId);
     const conversations = await Conversation.find(
       { participants: me },
-      { unread: 1 },
+      { unread: 1, participants: 1 },
     ).lean();
+
+    // Don't count unread from blocked threads — keeps the badge consistent with
+    // the (filtered) conversation list.
+    const hidden = new Set(await Block.hiddenUserIdsFor(me));
 
     let total = 0;
     for (const c of conversations) {
+      const other = (c.participants || []).find((p) => String(p) !== me);
+      if (other && hidden.has(String(other))) continue;
       const map = c.unread || {};
       total += Number(map[me] || 0);
     }
@@ -218,6 +232,11 @@ router.post('/messages', authenticate, async (req, res, next) => {
 
     const recipient = await User.findById(toUserId).select('_id');
     if (!recipient) throw new AppError('Recipient not found', 404);
+
+    // Mutual block enforcement: if either user has blocked the other, no
+    // messages may pass. This is what makes a block real rather than cosmetic.
+    const blocked = await Block.existsBetween(me, toUserId);
+    if (blocked) throw new AppError('You can no longer message this user', 403);
 
     const convo = await Conversation.findOrCreate(me, toUserId);
 
