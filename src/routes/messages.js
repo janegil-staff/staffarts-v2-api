@@ -21,7 +21,7 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 
-import authenticate from '../middleware/auth.js';
+import authenticate from '../middleware/authenticate.js';
 import { AppError } from '../middleware/errorHandler.js';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
