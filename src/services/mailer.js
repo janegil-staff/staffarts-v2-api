@@ -1,19 +1,19 @@
 // src/services/mailer.js
 //
 // Email sending via Resend. Currently used for the forgot-PIN reset code.
-// qupda.com is verified in Resend, so EMAIL_FROM should be an address on that
-// domain (e.g. "Staff Arts <no-reply@qupda.com>").
+// qup.dating is verified in Resend, so EMAIL_FROM should be an address on that
+// domain (e.g. "Staffarts <noreply@qup.dating>").
 //
 // Required env vars:
 //   RESEND_API_KEY  — your Resend API key
-//   EMAIL_FROM      — verified sender, e.g. "Staff Arts <no-reply@qupda.com>"
+//   EMAIL_FROM      — verified sender, e.g. "Staffarts <noreply@qup.dating>"
 //
 // Install once in the API:  npm install resend
 
 import { Resend } from 'resend';
 
 const apiKey = process.env.RESEND_API_KEY || '';
-const FROM = process.env.EMAIL_FROM || 'Staff Arts <no-reply@qupda.com>';
+const FROM = process.env.EMAIL_FROM || 'Staffarts <noreply@qup.dating>';
 
 // Construct lazily-safe: if the key is missing we still export a function that
 // throws a clear error when called, rather than crashing on import (so the rest
