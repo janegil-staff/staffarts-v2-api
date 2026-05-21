@@ -1,73 +1,90 @@
 // src/services/mailer.js
 //
-// Resend wrapper for transactional emails. Currently sends:
-//   - PIN reset codes
+// Email sending via Resend. Currently used for the forgot-PIN reset code.
+// qupda.com is verified in Resend, so EMAIL_FROM should be an address on that
+// domain (e.g. "Staff Arts <no-reply@qupda.com>").
 //
 // Required env vars:
-//   RESEND_API_KEY  - https://resend.com/api-keys
-//   EMAIL_FROM      - "Staff Arts <hello@yourdomain.com>"
-//                     (domain must be verified in Resend dashboard)
+//   RESEND_API_KEY  — your Resend API key
+//   EMAIL_FROM      — verified sender, e.g. "Staff Arts <no-reply@qupda.com>"
+//
+// Install once in the API:  npm install resend
 
 import { Resend } from 'resend';
 
-const resend = process.env.RESEND_API_KEY
-  ? new Resend(process.env.RESEND_API_KEY)
-  : null;
+const apiKey = process.env.RESEND_API_KEY || '';
+const FROM = process.env.EMAIL_FROM || 'Staff Arts <no-reply@qupda.com>';
 
-const FROM = process.env.EMAIL_FROM || 'Staff Arts <onboarding@resend.dev>';
+// Construct lazily-safe: if the key is missing we still export a function that
+// throws a clear error when called, rather than crashing on import (so the rest
+// of auth — login/register — keeps working even if email is misconfigured).
+const resend = apiKey ? new Resend(apiKey) : null;
 
-if (!resend && process.env.NODE_ENV === 'production') {
-  console.warn('[mailer] RESEND_API_KEY not set — emails will not be sent.');
+// Bilingual (Norwegian + English) reset-code email. Transactional emails run
+// server-side with no i18n context, so we keep it to the two most relevant
+// languages for this audience.
+function buildResetEmail({ displayName, code, ttlMinutes }) {
+  const name = displayName || '';
+  const greetingNo = name ? `Hei ${name},` : 'Hei,';
+  const greetingEn = name ? `Hi ${name},` : 'Hi,';
+
+  const subject = 'Staff Arts — tilbakestill PIN / reset your PIN';
+
+  const text = [
+    `${greetingNo}`,
+    ``,
+    `Bruk denne koden for å tilbakestille PIN-koden din: ${code}`,
+    `Koden er gyldig i ${ttlMinutes} minutter.`,
+    `Hvis du ikke ba om dette, kan du se bort fra denne e-posten.`,
+    ``,
+    `— — —`,
+    ``,
+    `${greetingEn}`,
+    ``,
+    `Use this code to reset your PIN: ${code}`,
+    `The code is valid for ${ttlMinutes} minutes.`,
+    `If you didn't request this, you can ignore this email.`,
+    ``,
+    `Staff Arts · Qup DA`,
+  ].join('\n');
+
+  const html = `
+  <div style="font-family:Georgia,serif;max-width:480px;margin:0 auto;color:#1a1a1a;line-height:1.6">
+    <h2 style="color:#2d4a6e;margin-bottom:4px">Staff Arts</h2>
+    <p>${greetingNo}</p>
+    <p>Bruk denne koden for å tilbakestille PIN-koden din:</p>
+    <p style="font-size:32px;font-weight:bold;letter-spacing:6px;color:#c97060;margin:16px 0">${code}</p>
+    <p style="color:#666;font-size:14px">Koden er gyldig i ${ttlMinutes} minutter. Hvis du ikke ba om dette, kan du se bort fra denne e-posten.</p>
+    <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
+    <p>${greetingEn}</p>
+    <p>Use this code to reset your PIN:</p>
+    <p style="font-size:32px;font-weight:bold;letter-spacing:6px;color:#c97060;margin:16px 0">${code}</p>
+    <p style="color:#666;font-size:14px">The code is valid for ${ttlMinutes} minutes. If you didn't request this, you can ignore this email.</p>
+    <p style="color:#999;font-size:12px;margin-top:24px">Staff Arts · Qup DA</p>
+  </div>`;
+
+  return { subject, text, html };
 }
 
-// ── PIN reset email ─────────────────────────────────────────────────────
-
-const PIN_RESET_TEMPLATE_EN = ({ displayName, code, ttlMinutes }) => ({
-  subject: 'Your Staff Arts PIN reset code',
-  text: `Hi ${displayName || 'there'},
-
-You requested to reset your Staff Arts PIN. Enter this code in the app:
-
-    ${code}
-
-This code is valid for ${ttlMinutes} minutes. If you didn't request a reset, you can safely ignore this email.
-
-— Staff Arts`,
-  html: `
-    <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;max-width:560px;margin:auto;padding:24px;color:#1a1a1a">
-      <h1 style="font-size:20px;margin:0 0 16px;color:#2D4A6E">Reset your PIN</h1>
-      <p>Hi ${displayName || 'there'},</p>
-      <p>You requested to reset your Staff Arts PIN. Enter this code in the app:</p>
-      <div style="background:#FAF7F2;border:1px solid #e8e2d5;border-radius:8px;padding:18px 24px;text-align:center;margin:24px 0">
-        <div style="font-size:32px;letter-spacing:8px;font-weight:700;color:#C97060">${code}</div>
-      </div>
-      <p style="color:#666;font-size:14px">This code is valid for <strong>${ttlMinutes} minutes</strong>. If you didn't request a reset, you can safely ignore this email.</p>
-      <p style="color:#999;font-size:12px;margin-top:32px;border-top:1px solid #eee;padding-top:16px">— Staff Arts</p>
-    </div>
-  `.trim(),
-});
-
 export async function sendPinResetEmail({ to, displayName, code, ttlMinutes }) {
-  const tpl = PIN_RESET_TEMPLATE_EN({ displayName, code, ttlMinutes });
-
   if (!resend) {
-    // Dev fallback: log to console so you can test the flow without Resend.
-    console.log(
-      `[mailer:dev] Would send PIN reset to ${to}:\n  subject: ${tpl.subject}\n  code: ${code}`,
+    throw new Error(
+      'Email not configured: set RESEND_API_KEY (and EMAIL_FROM) env vars.',
     );
-    return { id: 'dev-noop' };
   }
 
-  const { data, error } = await resend.emails.send({
+  const { subject, text, html } = buildResetEmail({ displayName, code, ttlMinutes });
+
+  const { error } = await resend.emails.send({
     from: FROM,
     to,
-    subject: tpl.subject,
-    text: tpl.text,
-    html: tpl.html,
+    subject,
+    text,
+    html,
   });
 
   if (error) {
-    throw new Error(`Resend error: ${error.message}`);
+    // Surface so the caller can log it (forgotPin catches and swallows).
+    throw new Error(error.message || 'Resend send failed');
   }
-  return data;
 }
